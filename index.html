@@ -1,0 +1,649 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>SpiritMusic — Projects, Autosave & Tutorial</title>
+    <script src="https://unpkg.com/react@18/umd/react.development.js" crossorigin></script>
+    <script src="https://unpkg.com/react-dom@18/umd/react-dom.development.js" crossorigin></script>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+      .step-btn { width: 2rem; height: 2rem; display: inline-flex; align-items: center; justify-content: center; }
+      .toast { transition: opacity 300ms ease, transform 300ms ease; }
+      /* tutorial highlight */
+      .tutorial-overlay {
+        position: fixed;
+        inset: 0;
+        background: rgba(0,0,0,0.65);
+        z-index: 9998;
+        transition: opacity 250ms ease;
+      }
+      .tutorial-highlight {
+        position: absolute;
+        border-radius: 12px;
+        box-shadow: 0 0 0 6px rgba(99,102,241,0.18), 0 10px 30px rgba(0,0,0,0.6);
+        pointer-events: none;
+        z-index: 9999;
+        transition: all 300ms ease;
+      }
+      .tutorial-card {
+        position: absolute;
+        z-index: 10000;
+        max-width: 360px;
+        background: rgba(255,255,255,0.06);
+        border-radius: 12px;
+        padding: 16px;
+        color: white;
+        box-shadow: 0 10px 30px rgba(0,0,0,0.6);
+        backdrop-filter: blur(6px);
+        transition: transform 220ms ease, opacity 220ms ease;
+      }
+      .helper-zone {
+        position: absolute;
+        right: 18px;
+        top: 18px;
+        z-index: 1001;
+        display: flex;
+        gap: 8px;
+        align-items: center;
+      }
+      .beginner-switch {
+        display: inline-flex;
+        align-items: center;
+        gap: 8px;
+        font-size: 0.9rem;
+      }
+      .hint-bar {
+        position: fixed;
+        left: 50%;
+        transform: translateX(-50%);
+        bottom: 18px;
+        z-index: 9999;
+        width: min(900px, calc(100% - 40px));
+        max-width: calc(100% - 40px);
+      }
+    </style>
+  </head>
+  <body class="bg-gradient-to-b from-indigo-900 via-purple-800 to-pink-700 text-white min-h-screen">
+    <div id="root"></div>
+
+    <script>
+      (function () {
+        const { useEffect, useRef, useState } = React;
+        const h = React.createElement;
+
+        // Storage keys
+        const STORAGE_KEY = 'spiritmusic_projects_v2';
+        const LAST_ID_KEY = 'spiritmusic_last_project_id_v2';
+        const TUTORIAL_DONE_KEY = 'spirit_tutorial_done';
+        const BEGINNER_MODE_KEY = 'spirit_beginner_mode';
+
+        const NOTES = [
+          "C4","C#4","D4","D#4","E4","F4","F#4","G4","G#4","A4","A#4","B4",
+          "C5","C#5","D5","D#5","E5","F5","F#5","G5","G#5","A5","A#5","B5",
+        ];
+
+        function noteToFreq(note) {
+          const A4 = 440;
+          const semitoneMap = { C: -9, 'C#': -8, Db: -8, D: -7, 'D#': -6, Eb: -6, E: -5, F: -4, 'F#': -3, Gb: -3, G: -2, 'G#': -1, Ab: -1, A: 0, 'A#': 1, Bb: 1, B: 2 };
+          const m = ('' + note).match(/^([A-G]#?b?)(\d)$/);
+          if (!m) return A4;
+          const pitch = m[1];
+          const octave = parseInt(m[2], 10);
+          const semitoneOffset = semitoneMap[pitch] || 0;
+          const semitones = semitoneOffset + (octave - 4) * 12;
+          return A4 * Math.pow(2, semitones / 12);
+        }
+
+        // storage helpers with safety
+        function loadAllProjects() {
+          try {
+            const raw = localStorage.getItem(STORAGE_KEY);
+            if (!raw) return {};
+            const parsed = JSON.parse(raw);
+            return parsed && typeof parsed === 'object' ? parsed : {};
+          } catch (e) {
+            console.warn('Failed to parse projects from localStorage, resetting.', e);
+            try { localStorage.removeItem(STORAGE_KEY); } catch (e2) {}
+            return {};
+          }
+        }
+        function saveAllProjects(obj) {
+          try { localStorage.setItem(STORAGE_KEY, JSON.stringify(obj)); } catch (e) { console.warn('Failed to save projects', e); }
+        }
+
+        function defaultProject(id) {
+          const stepLength = 16;
+          const tracks = Array.from({ length: 8 }, (_, i) => ({
+            id: i,
+            name: `Track ${i+1}`,
+            pattern: new Array(stepLength).fill(false),
+            note: NOTES[i % NOTES.length],
+            volume: 0.9,
+            type: 'synth'
+          }));
+          return { id, name: 'My First Beat', tempo: 100, tracks };
+        }
+
+        // Toasts (bottom-center) - reused
+        function useToasts() {
+          const [toasts, setToasts] = useState([]);
+          function push(msg, ms = 2000) {
+            const id = 't-' + Date.now() + '-' + Math.floor(Math.random()*1000);
+            setToasts(t => [...t, { id, msg }]);
+            setTimeout(() => setToasts(t => t.filter(x => x.id !== id)), ms);
+          }
+          return { toasts, push };
+        }
+
+        // Tutorial steps definition (selectors reference element ids)
+        const TUTORIAL_STEPS = [
+          { selector: '#top-title', text: 'Hey there, Rockstar! Welcome to SpiritMusic — your place to make magical beats! Click Next to start your first groove.' },
+          { selector: '#tempo-slider', text: 'This slider controls how fast your song moves. Slide left for chill, right for hype!' },
+          { selector: '#play-btn', text: 'Ready to hear your creation? Hit Play and let\'s vibe!' },
+          { selector: '#tracks-grid', text: 'These little boxes are your rhythm! Click a box to turn it on — green means it will play.' },
+          { selector: '#keyboard', text: 'Feeling inspired? Tap a note to play it live — jam however you like!' },
+          { selector: '#projects-btn', text: 'Want to save your masterpiece? Use Projects to save, load, or rename your songs.' },
+          { selector: '#export-wav-btn', text: 'Finished? Export your song as WAV or MIDI to share with the world!' },
+          { selector: '#help-btn', text: 'You can replay this tutorial anytime with this help button. Have fun and make something amazing!' }
+        ];
+
+        // Small helper to safely query and fallback
+        function query(selector) {
+          try { return document.querySelector(selector); } catch (e) { return null; }
+        }
+
+        // Ding sound manager
+        function useDing() {
+          const dingRef = useRef(null);
+          const softRef = useRef(null);
+          useEffect(() => {
+            // attempt to preload sounds; if missing, ignore silently
+            try { dingRef.current = new Audio('/sounds/ding_c6.wav'); dingRef.current.volume = 0.32; } catch(e) { dingRef.current = null; }
+            try { softRef.current = new Audio('/sounds/ding_c6_soft.wav'); softRef.current.volume = 0.22; } catch(e) { softRef.current = null; }
+          }, []);
+          function play(normal = true) {
+            try {
+              const a = (normal ? dingRef.current : softRef.current);
+              if (!a) return;
+              // create a clone so overlapping plays don't cut early
+              const c = a.cloneNode();
+              c.volume = a.volume;
+              c.play().catch(()=>{});
+            } catch (e) { /* ignore */ }
+          }
+          return { play };
+        }
+
+        function SpiritMusic() {
+          // audio / synth
+          const audioCtxRef = useRef(null);
+          const masterGainRef = useRef(null);
+          const [isRunning, setIsRunning] = useState(false);
+          const stepLength = 16;
+
+          // projects
+          const [projects, setProjects] = useState(() => loadAllProjects());
+          const [currentProjectId, setCurrentProjectId] = useState(() => localStorage.getItem(LAST_ID_KEY) || '');
+          const [current, setCurrent] = useState(() => {
+            const id = localStorage.getItem(LAST_ID_KEY);
+            const all = loadAllProjects();
+            if (id && all[id]) return all[id];
+            return defaultProject('p-' + Date.now());
+          });
+
+          // UI state
+          const [projectsOpen, setProjectsOpen] = useState(false);
+          const { toasts, push } = useToasts();
+
+          // tutorial & beginner mode
+          const [tutorialOpen, setTutorialOpen] = useState(false);
+          const [tutorialStepIndex, setTutorialStepIndex] = useState(0);
+          const [tutorialHighlightRect, setTutorialHighlightRect] = useState(null);
+          const [tutorialCardPos, setTutorialCardPos] = useState({ top: 80, left: 80 });
+          const [beginnerMode, setBeginnerMode] = useState(() => {
+            try { return localStorage.getItem(BEGINNER_MODE_KEY) === 'true'; } catch (e) { return true; }
+          });
+          const ding = useDing();
+
+          // hint bar
+          const [hintMessage, setHintMessage] = useState('');
+          const hintTimeoutRef = useRef(null);
+
+          // scheduler
+          const lookaheadMs = 25;
+          const nextNoteTimeRef = useRef(0);
+          const timerIdRef = useRef(null);
+          const currentStepRef = useRef(0);
+
+          // autosave debounce
+          const saveTimeoutRef = useRef(null);
+
+          useEffect(() => {
+            // ensure current is in projects on first load
+            setProjects(prev => {
+              const copy = { ...prev };
+              if (current && current.id) copy[current.id] = current;
+              saveAllProjects(copy);
+              return copy;
+            });
+
+            // auto-start tutorial for first-time users
+            const done = localStorage.getItem(TUTORIAL_DONE_KEY);
+            if (!done) {
+              // open tutorial after a short delay so UI renders
+              setTimeout(() => {
+                startTutorial();
+              }, 600);
+            }
+            // eslint-disable-next-line react-hooks/exhaustive-deps
+          }, []);
+
+          // helper: show a hint (only when beginner mode ON)
+          function showHint(msg, playSound = true, autoClearMs = 5000) {
+            if (!beginnerMode) return;
+            setHintMessage(msg);
+            if (playSound) ding.play(true);
+            if (hintTimeoutRef.current) clearTimeout(hintTimeoutRef.current);
+            if (autoClearMs) hintTimeoutRef.current = setTimeout(() => setHintMessage(''), autoClearMs);
+          }
+
+          // tutorial controls
+          function openTutorial() {
+            setTutorialStepIndex(0);
+            setTutorialOpen(true);
+            // set highlight for step 0 once open renders
+            setTimeout(() => positionTutorialHighlight(0), 80);
+          }
+          function startTutorial() {
+            // enable beginner mode automatically when tutorial runs
+            setBeginnerMode(true);
+            try { localStorage.setItem(BEGINNER_MODE_KEY, 'true'); } catch (e) {}
+            if (!tutorialOpen) {
+              openTutorial();
+            }
+          }
+          function closeTutorial(markDone = true) {
+            setTutorialOpen(false);
+            setTutorialHighlightRect(null);
+            if (markDone) {
+              try { localStorage.setItem(TUTORIAL_DONE_KEY, 'true'); } catch (e) {}
+            }
+          }
+          function nextTutorial() {
+            const next = Math.min(tutorialStepIndex + 1, TUTORIAL_STEPS.length - 1);
+            setTutorialStepIndex(next);
+            positionTutorialHighlight(next);
+          }
+          function prevTutorial() {
+            const prev = Math.max(0, tutorialStepIndex - 1);
+            setTutorialStepIndex(prev);
+            positionTutorialHighlight(prev);
+          }
+
+          function positionTutorialHighlight(stepIdx) {
+            const step = TUTORIAL_STEPS[stepIdx];
+            if (!step) return;
+            const el = query(step.selector);
+            if (!el) {
+              // no element found: set default center position
+              setTutorialHighlightRect({ top: window.innerHeight/2 - 60, left: window.innerWidth/2 - 120, width: 240, height: 120 });
+              setTutorialCardPos({ top: window.innerHeight/2 + 80, left: window.innerWidth/2 - 180 });
+              return;
+            }
+            // scroll into view
+            el.scrollIntoView({ behavior: 'smooth', block: 'center', inline: 'center' });
+            const rect = el.getBoundingClientRect();
+            // add some padding
+            const pad = 8;
+            const highlight = {
+              top: rect.top - pad + window.scrollY,
+              left: rect.left - pad + window.scrollX,
+              width: rect.width + pad*2,
+              height: rect.height + pad*2
+            };
+            setTutorialHighlightRect(highlight);
+            // tooltip pos: try placing below the element, or to the right if near bottom
+            let cardLeft = highlight.left;
+            let cardTop = highlight.top + highlight.height + 12;
+            if (cardTop + 160 > window.innerHeight + window.scrollY) {
+              // place above
+              cardTop = highlight.top - 160 - 12;
+              if (cardTop < 10) cardTop = 10;
+            }
+            if (cardLeft + 380 > window.innerWidth + window.scrollX) {
+              cardLeft = Math.max(10, window.innerWidth + window.scrollX - 390);
+            }
+            setTutorialCardPos({ top: cardTop, left: cardLeft });
+          }
+
+          // storage helpers & autosave
+          function scheduleSave(project) {
+            if (!project || !project.id) return;
+            if (saveTimeoutRef.current) clearTimeout(saveTimeoutRef.current);
+            saveTimeoutRef.current = setTimeout(() => {
+              const all = loadAllProjects();
+              all[project.id] = project;
+              saveAllProjects(all);
+              try { localStorage.setItem(LAST_ID_KEY, project.id); } catch (e) {}
+              setProjects(all);
+              push('Saved');
+              showHint('Your project was saved!', true);
+            }, 300);
+          }
+
+          function saveNow(name) {
+            if (!current) return;
+            const id = current.id || ('p-' + Date.now());
+            const p = { ...current, id, name: name || current.name };
+            const all = loadAllProjects(); all[id] = p; saveAllProjects(all); try { localStorage.setItem(LAST_ID_KEY, id); } catch (e) {}
+            setProjects(all); setCurrent(p); setCurrentProjectId(id);
+            push('Saved'); showHint('Saved! Nice work!');
+          }
+
+          function newProject() {
+            const id = 'p-' + Date.now();
+            const p = defaultProject(id);
+            const all = loadAllProjects(); all[id] = p; saveAllProjects(all); try { localStorage.setItem(LAST_ID_KEY, id); } catch (e) {}
+            setProjects(all); setCurrent(p); setCurrentProjectId(id); push('New'); showHint('New project created — go ahead and add beats!');
+          }
+
+          function loadProject(id) {
+            const all = loadAllProjects(); if (!all[id]) { push('Project not found'); showHint('Couldn’t find that project.'); return; }
+            setCurrent(all[id]); setCurrentProjectId(id); try { localStorage.setItem(LAST_ID_KEY, id); } catch (e) {}
+            push('Loaded'); showHint('Project loaded — keep going!');
+          }
+
+          function deleteProject(id) {
+            if (!confirm('Delete project?')) return;
+            const all = loadAllProjects(); delete all[id]; saveAllProjects(all); setProjects(all); push('Deleted'); showHint('Project deleted.');
+            if (currentProjectId === id) {
+              const ids = Object.keys(all);
+              if (ids.length) loadProject(ids[0]); else { const p = defaultProject('p-' + Date.now()); all[p.id] = p; saveAllProjects(all); setProjects(all); setCurrent(p); setCurrentProjectId(p.id); }
+            }
+          }
+
+          function renameProject(id) {
+            const all = loadAllProjects(); if (!all[id]) return; const name = prompt('Rename project', all[id].name || ''); if (!name) return; all[id].name = name; saveAllProjects(all); setProjects(all); if (currentProjectId === id) setCurrent(all[id]); push('Renamed'); showHint('Renamed project.');
+          }
+
+          // audio init
+          function initAudio() {
+            if (!audioCtxRef.current) {
+              const AC = window.AudioContext || window.webkitAudioContext;
+              try {
+                audioCtxRef.current = new AC();
+                masterGainRef.current = audioCtxRef.current.createGain();
+                masterGainRef.current.gain.value = 0.8;
+                masterGainRef.current.connect(audioCtxRef.current.destination);
+              } catch (e) {
+                console.warn('WebAudio initialization failed', e);
+              }
+            }
+          }
+
+          // sequencer scheduling / play
+          function toggleStep(trackId, step) {
+            if (!current) return;
+            const updated = { ...current, tracks: current.tracks.map(t => t.id === trackId ? { ...t, pattern: (t.pattern||[]).map((v,i) => i===step ? !v : v) } : t) };
+            setCurrent(updated); scheduleSave(updated); showHint('Beat toggled — nice!'); // interactive hint
+          }
+
+          function setTrackNote(trackId, note) { if (!current) return; const updated = { ...current, tracks: current.tracks.map(t => t.id === trackId ? { ...t, note } : t) }; setCurrent(updated); scheduleSave(updated); showHint('Track note set'); }
+          function setTrackName(trackId, name) { if (!current) return; const updated = { ...current, tracks: current.tracks.map(t => t.id === trackId ? { ...t, name } : t) }; setCurrent(updated); scheduleSave(updated); showHint('Track renamed'); }
+          function setProjectTempo(t) { if (!current) return; const updated = { ...current, tempo: t }; setCurrent(updated); scheduleSave(updated); showHint('Tempo updated'); }
+
+          function start() {
+            initAudio(); const audioCtx = audioCtxRef.current; if (audioCtx && audioCtx.state === 'suspended') audioCtx.resume(); setIsRunning(true); if (audioCtx) nextNoteTimeRef.current = audioCtx.currentTime; currentStepRef.current = 0; if (timerIdRef.current) clearInterval(timerIdRef.current); timerIdRef.current = setInterval(scheduler, lookaheadMs); showHint('Playing — listen to your groove!'); }
+          function stop() { setIsRunning(false); if (timerIdRef.current) { clearInterval(timerIdRef.current); timerIdRef.current = null; } currentStepRef.current = 0; showHint('Stopped'); }
+
+          function scheduler() {
+            const audioCtx = audioCtxRef.current; if (!audioCtx || !current) return; const secondsPerBeat = 60.0 / (current.tempo || 120); const stepSeconds = secondsPerBeat / 4; const lookahead = lookaheadMs / 1000; while (nextNoteTimeRef.current < audioCtx.currentTime + lookahead) { const step = currentStepRef.current % stepLength; scheduleStep(step, nextNoteTimeRef.current); nextNoteTimeRef.current += stepSeconds; currentStepRef.current = (currentStepRef.current + 1) % stepLength; } 
+          }
+
+          function scheduleStep(step, time) { if (!current) return; (current.tracks||[]).forEach(track => { if (track.pattern && track.pattern[step]) playSynthNote(track, time); }); }
+
+          function playSynthNote(track, when = 0, duration = 0.25, ctx = null, master = null) {
+            const audioCtx = ctx || audioCtxRef.current; if (!audioCtx) return; try {
+              const freq = noteToFreq(track.note);
+              const osc = audioCtx.createOscillator();
+              const g = audioCtx.createGain();
+              osc.type = 'sawtooth';
+              osc.frequency.value = freq;
+              g.gain.setValueAtTime(0.0001, when);
+              g.gain.linearRampToValueAtTime((track.volume || 0.8), when + 0.01);
+              g.gain.exponentialRampToValueAtTime(0.0001, when + duration);
+              osc.connect(g);
+              g.connect(master || masterGainRef.current);
+              osc.start(when);
+              osc.stop(when + duration + 0.05);
+            } catch (e) { console.warn('playSynthNote failed', e); }
+          }
+
+          function playLive(note) { initAudio(); const audioCtx = audioCtxRef.current; if (!audioCtx) return; try { const freq = noteToFreq(note); const osc = audioCtx.createOscillator(); const g = audioCtx.createGain(); osc.type = 'sine'; osc.frequency.value = freq; g.gain.value = 0.25; osc.connect(g); g.connect(masterGainRef.current); osc.start(); setTimeout(() => { try { g.gain.exponentialRampToValueAtTime(0.0001, audioCtx.currentTime + 0.18); osc.stop(audioCtx.currentTime + 0.2); } catch (e) {} }, 50); showHint('Played a note — nice jam!'); } catch (e) { console.warn('playLive failed', e); } }
+
+          // WAV export (simple version)
+          async function exportWAV() {
+            const bars = parseInt(prompt('How many bars to export?', '4')) || 4;
+            const tempo = current.tempo || 120;
+            const secondsPerBeat = 60 / tempo;
+            const beatsPerBar = 4;
+            const totalDuration = bars * beatsPerBar * secondsPerBeat + 0.3;
+
+            push('Rendering export...');
+            showHint('Rendering export...');
+            try {
+              const sampleRate = 44100;
+              const OfflineAC = window.OfflineAudioContext || window.webkitOfflineAudioContext;
+              if (!OfflineAC) { push('OfflineAudioContext not supported'); showHint('Export not supported in this browser'); return; }
+
+              const offline = new OfflineAC(2, Math.ceil(sampleRate * totalDuration), sampleRate);
+              const master = offline.createGain();
+              master.gain.value = 0.8;
+              master.connect(offline.destination);
+
+              const stepDur = secondsPerBeat / 4;
+              const totalSteps = stepLength * bars;
+              for (let step = 0; step < totalSteps; step++) {
+                const when = step * stepDur;
+                (current.tracks || []).forEach(track => {
+                  if (track.pattern && track.pattern[step % stepLength]) {
+                    // schedule
+                    const osc = offline.createOscillator();
+                    const g = offline.createGain();
+                    osc.type = 'sawtooth';
+                    const freq = noteToFreq(track.note);
+                    osc.frequency.value = freq;
+                    g.gain.setValueAtTime(0.0001, when);
+                    g.gain.linearRampToValueAtTime(track.volume || 0.8, when + 0.01);
+                    g.gain.exponentialRampToValueAtTime(0.0001, when + 0.25);
+                    osc.connect(g);
+                    g.connect(master);
+                    osc.start(when);
+                    osc.stop(when + 0.3);
+                  }
+                });
+              }
+
+              // fade-out 0.1s
+              master.gain.setValueAtTime(0.8, totalDuration - 0.12);
+              master.gain.linearRampToValueAtTime(0, totalDuration);
+
+              const rendered = await offline.startRendering();
+
+              // encode WAV
+              const wavBlob = encodeWav(rendered);
+              const a = document.createElement('a');
+              a.href = URL.createObjectURL(wavBlob);
+              a.download = `SpiritMusic_${(current.name||'song').replace(/\s+/g,'_')}.wav`;
+              document.body.appendChild(a);
+              a.click();
+              a.remove();
+              URL.revokeObjectURL(a.href);
+              push('Export complete');
+              showHint('WAV exported successfully!');
+            } catch (e) {
+              console.error('Export failed', e);
+              push('Export failed');
+              showHint('Export failed — try a different browser.');
+            }
+          }
+
+          // simple WAV encoder (Float32 -> 16-bit)
+          function encodeWav(buffer) {
+            const numChannels = buffer.numberOfChannels;
+            const sampleRate = buffer.sampleRate;
+            const format = 1; // PCM
+            const bitDepth = 16;
+
+            const samples = buffer.length * numChannels;
+            const bufferLength = 44 + samples * 2;
+            const view = new DataView(new ArrayBuffer(bufferLength));
+
+            function writeString(view, offset, string) {
+              for (let i = 0; i < string.length; i++) {
+                view.setUint8(offset + i, string.charCodeAt(i));
+              }
+            }
+
+            let offset = 0;
+            writeString(view, offset, 'RIFF'); offset += 4;
+            view.setUint32(offset, 36 + samples * 2, true); offset += 4;
+            writeString(view, offset, 'WAVE'); offset += 4;
+            writeString(view, offset, 'fmt '); offset += 4;
+            view.setUint32(offset, 16, true); offset += 4;
+            view.setUint16(offset, format, true); offset += 2;
+            view.setUint16(offset, numChannels, true); offset += 2;
+            view.setUint32(offset, sampleRate, true); offset += 4;
+            view.setUint32(offset, sampleRate * numChannels * bitDepth/8, true); offset += 4;
+            view.setUint16(offset, numChannels * bitDepth/8, true); offset += 2;
+            view.setUint16(offset, bitDepth, true); offset += 2;
+            writeString(view, offset, 'data'); offset += 4;
+            view.setUint32(offset, samples * 2, true); offset += 4;
+
+            // write interleaved
+            const channels = [];
+            for (let i = 0; i < numChannels; i++) channels.push(buffer.getChannelData(i));
+            let pos = 44;
+            for (let i = 0; i < buffer.length; i++) {
+              for (let ch = 0; ch < numChannels; ch++) {
+                let sample = Math.max(-1, Math.min(1, channels[ch][i]));
+                view.setInt16(pos, sample < 0 ? sample * 0x8000 : sample * 0x7FFF, true);
+                pos += 2;
+              }
+            }
+            return new Blob([view], { type: 'audio/wav' });
+          }
+
+          // UI elements (IDs used by tutorial)
+          const header = h('header', { className: 'flex justify-between items-center mb-4' },
+            h('h1', { id: 'top-title', className: 'text-3xl font-extrabold' }, 'SpiritMusic'),
+            h('div', { className: 'flex items-center gap-3' },
+              h('div', { className: 'flex items-center gap-2' },
+                h('label', null, 'Tempo'),
+                h('input', { id: 'tempo-slider', type: 'range', min: 40, max: 240, value: current.tempo || 120, onChange: e => setProjectTempo(Number(e.target.value)) }),
+                h('span', null, `${current.tempo || 120} BPM`)
+              ),
+              h('button', { id: 'play-btn', onClick: () => isRunning ? stop() : start(), className: 'px-4 py-2 rounded bg-emerald-500 text-black' }, isRunning ? 'Stop' : 'Play')
+            )
+          );
+
+          // helper zone: help button + beginner toggle
+          const helperZone = h('div', { className: 'helper-zone' },
+            h('div', { className: 'beginner-switch' },
+              h('label', { htmlFor: 'beginner-toggle', className: 'text-sm' }, 'Beginner Mode'),
+              h('input', {
+                id: 'beginner-toggle',
+                type: 'checkbox',
+                checked: beginnerMode,
+                onChange: e => { const on = e.target.checked; setBeginnerMode(on); try { localStorage.setItem(BEGINNER_MODE_KEY, on ? 'true' : 'false'); } catch (err) {} if (on) showHint('Beginner Mode ON — tips will appear below'); else setHintMessage(''); }
+              })
+            ),
+            h('button', { id: 'help-btn', onClick: () => { startTutorial(); }, className: 'px-3 py-2 rounded bg-white/10', title: 'Open tutorial' }, '?')
+          );
+
+          const projectControls = h('div', { className: 'flex items-center gap-2' },
+            h('button', { id: 'projects-btn', onClick: () => setProjectsOpen(p => !p), className: 'px-3 py-2 rounded bg-white/10' }, 'Projects'),
+            h('button', { id: 'export-wav-btn', onClick: exportWAV, className: 'px-3 py-2 rounded bg-yellow-400 text-black' }, 'Export WAV')
+          );
+
+          const projectList = h('div', { className: 'flex items-center gap-2' }, projectControls);
+
+          // tracks UI
+          const tracksEls = (current && current.tracks ? current.tracks : []).map(track => {
+            const stepButtons = Array.from({ length: stepLength }).map((_, i) => {
+              const on = !!(track.pattern && track.pattern[i]);
+              const cls = `step-btn rounded ${on ? 'bg-teal-400 text-black' : 'bg-white/10'}`;
+              return h('button', { key: i, className: cls, onClick: () => toggleStep(track.id, i), type: 'button' }, String(i + 1));
+            });
+
+            return h('div', { key: track.id, className: 'bg-white/10 rounded p-3 mb-3' },
+              h('div', { className: 'flex items-center gap-3 mb-2' },
+                h('input', { value: track.name || '', onChange: e => setTrackName(track.id, e.target.value), className: 'text-black rounded px-2' }),
+                h('input', { value: track.note || '', onChange: e => setTrackNote(track.id, e.target.value), className: 'text-black rounded px-2 w-24' })
+              ),
+              h('div', { id: 'tracks-grid', className: 'flex flex-wrap gap-1' }, stepButtons)
+            );
+          });
+
+          const keyboard = h('div', { id: 'keyboard', className: 'flex flex-wrap gap-1 mt-2' }, NOTES.slice(0, 12).map(n => h('button', { key: n, onClick: () => playLive(n), className: 'px-3 py-2 rounded bg-white/10', type: 'button' }, n)));
+
+          // main layout
+          return h('div', { className: 'p-6 max-w-6xl mx-auto relative' },
+            // helper zone (absolute top-right)
+            helperZone,
+            h('div', { className: 'mb-4 flex items-center justify-between' }, header, projectList),
+            ...tracksEls,
+            h('div', { className: 'mt-6' }, h('h3', { className: 'font-bold' }, 'Play Live Notes'), keyboard),
+            // toasts (bottom-center)
+            h('div', { style: { position: 'fixed', left: '50%', transform: 'translateX(-50%)', bottom: '24px', zIndex: 9999 } },
+              toasts.map(t => h('div', { key: t.id, className: 'toast mb-2 bg-white/10 px-4 py-2 rounded shadow-lg text-sm' }, t.msg))
+            ),
+            // beginner hint bar (fixed bottom; only visible when beginner mode ON and message non-empty)
+            beginnerMode && h('div', { className: 'hint-bar', style: { display: hintMessage ? 'block' : 'none' } },
+              h('div', { className: 'bg-white/10 backdrop-blur-md text-white text-center py-3 px-4 rounded shadow-lg transition-opacity duration-300' },
+                h('div', { className: 'flex items-center justify-center gap-3' },
+                  h('div', null, hintMessage)
+                )
+              )
+            ),
+            // tutorial overlay & highlight
+            tutorialOpen && h('div', { className: 'tutorial-overlay', onClick: () => closeTutorial(true) },
+              // transparent overlay is the background; clicking closes tutorial
+              tutorialHighlightRect && h('div', {
+                className: 'tutorial-highlight',
+                style: {
+                  top: tutorialHighlightRect.top + 'px',
+                  left: tutorialHighlightRect.left + 'px',
+                  width: tutorialHighlightRect.width + 'px',
+                  height: tutorialHighlightRect.height + 'px'
+                }
+              }),
+              // card
+              h('div', {
+                className: 'tutorial-card',
+                style: { top: (tutorialCardPos.top) + 'px', left: (tutorialCardPos.left) + 'px' },
+                onClick: e => e.stopPropagation()
+              },
+                h('div', { className: 'text-lg font-semibold mb-2' }, 'SpiritMusic Tutorial'),
+                h('div', { className: 'text-sm mb-3' }, TUTORIAL_STEPS[tutorialStepIndex] ? TUTORIAL_STEPS[tutorialStepIndex].text : ''),
+                h('div', { className: 'flex justify-between gap-2' },
+                  h('div', null,
+                    h('button', { onClick: () => { prevTutorial(); }, className: 'px-3 py-2 rounded bg-white/10 mr-2', disabled: tutorialStepIndex===0 }, 'Back'),
+                    h('button', { onClick: () => { nextTutorial(); }, className: 'px-3 py-2 rounded bg-emerald-500 text-black' }, tutorialStepIndex === TUTORIAL_STEPS.length - 1 ? 'Finish' : 'Next')
+                  ),
+                  h('div', null,
+                    h('button', { onClick: () => closeTutorial(true), className: 'px-3 py-2 rounded bg-red-600 text-black' }, 'Skip')
+                  )
+                )
+              )
+            )
+          );
+        }
+
+        const root = ReactDOM.createRoot(document.getElementById('root'));
+        root.render(h(SpiritMusic));
+      })();
+    </script>
+  </body>
+</html>
